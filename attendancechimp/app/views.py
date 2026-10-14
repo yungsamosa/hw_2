@@ -36,16 +36,26 @@ def index(request):
 def time_view(request):
     """Returns a plaintext HttpResponse containing the current time in CST"""
     time = datetime.now(CDT)
-    return HttpResponse(f"{time}")
+    return HttpResponse(time.strftime("%H:%M"))
+
+def _parse_number(raw):
+    """Parse a query param as an int when possible, otherwise a float."""
+    raw = raw.strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return float(raw)
 
 def sum_view(request):
-    """Reads query params and returns the sum"""
+    """Reads query params and returns the sum inside a <p> tag"""
     try:
         n1 = request.GET['n1']
         n2 = request.GET['n2']
-        return HttpResponse(int(n1) + int(n2))
+        total = _parse_number(n1) + _parse_number(n2)
     except (KeyError, ValueError):
-        return HttpResponseBadRequest("n1 and n2 must be ints")
+        return HttpResponseBadRequest("<p>n1 and n2 must be numbers</p>")
+    return HttpResponse(f"<p>{total}</p>")
+
 
 
 # ---------------------------------------------------------------------------
