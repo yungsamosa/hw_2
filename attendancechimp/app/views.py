@@ -33,6 +33,19 @@ def index(request):
     context = {}
     return render(request, 'app/index.html', context)
 
+def time_view(request):
+    """Returns a plaintext HttpResponse containing the current time in CST"""
+    time = datetime.now(CDT)
+    return HttpResponse(f"{time}")
+
+def sum_view(request):
+    """Reads query params and returns the sum"""
+    try:
+        n1 = request.GET['n1']
+        n2 = request.GET['n2']
+        return HttpResponse(int(n1) + int(n2))
+    except (KeyError, ValueError):
+        return HttpResponseBadRequest("n1 and n2 must be ints")
 
 
 # ---------------------------------------------------------------------------
