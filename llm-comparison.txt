@@ -1,0 +1,113 @@
+LLM COMPARISON — AttendanceChimp data model
+===========================================
+
+Files compared
+--------------
+  attendancechimp/app/robot-models.py   LLM's first-pass output   (496 lines)
+  attendancechimp/app/models.py         reviewed/trimmed version  (270 lines)
+
+Both implement the same six entities from the ER diagram: InstructorProfile,
+StudentProfile, Course, Enrollment, Lecture, QRCodeUpload.
+
+
+1. What is identical
+--------------------
+The schema. A field-by-field diff of the two files shows the same field names,
+the same field types, and the same order in every one of the six models. Both
+produce the same six tables, so the trimming changed no column:
+
+  app_instructorprofile, app_studentprofile, app_course,
+  app_enrollment, app_lecture, app_qrcodeupload
+
+All six ER relationships are encoded the same way in both files:
+
+  InstructorProfile ||--o< Course        Course.instructor     NOT NULL, CASCADE
+  Course            ||--o< Lecture       Lecture.course        NOT NULL, CASCADE
+  Course            ||--o< Enrollment    Enrollment.course     NOT NULL, CASCADE
+  StudentProfile    ||--o< Enrollment    Enrollment.student    NOT NULL, CASCADE
+  StudentProfile    ||--o< QRCodeUpload  QRCodeUpload.student  NOT NULL, CASCADE
+  Lecture           o|--o< QRCodeUpload  QRCodeUpload.lecture  NULL, SET_NULL
+
+The pattern is mechanical: each "exactly one" (||) side becomes a ForeignKey,
+non-nullable; each "zero or many" (o<) side is the reverse accessor Django
+generates from related_name; the single "zero or one" (o|) in the diagram is
+the single nullable ForeignKey in the schema.
+
+
+2. What the LLM version has that the trimmed version does not
+-------------------------------------------------------------
+Roughly 226 lines, none of which affect the database:
+
+  - Two QR-token functions instead of one. generate_qr_code() returned a raw
+    random string and generate_unique_qr_code() wrapped it in a
+    retry-until-unused loop. These were merged, because qr_code is unique=True
+    and every real caller wants a token that will actually save; the unmerged
+    pair invited calling the wrong one.
+
+  - Convenience methods on every model: Course.meets_on / students /
+    enrollment_count / create_lecture; Lecture.attendees / attendance_count /
+    absentees / regenerate_qr_code; StudentProfile.enroll_in / is_enrolled_in /
+    attended / courses; InstructorProfile.teaches / create_course;
+    QRCodeUpload.is_validated / validate_against.
+
+  - Extra module-level helpers: get_profile, create_instructor, create_student,
+    record_qr_upload, getUploadsForStudent.
+
+  - help_text on every field, Meta.ordering on all six models, verbose_name on
+    the two profiles.
+
+Most of these methods are one-line wrappers around a query the ORM already
+expresses clearly. Course.students() is
+Course.objects.filter(enrollments__course=self), and lecture.uploads.count()
+needs no method at all. They were removed in favor of writing the query at the
+call site. The three helpers that survived — is_instructor, is_student,
+getUploadsForCourse — survived because views.py already imports those exact
+names.
+
+
+3. Where the LLM needed correcting
+----------------------------------
+(a) ImageField vs. FileField. The LLM chose models.ImageField for the uploaded
+    photo. ImageField requires Pillow, which is not installed in this
+    environment, so manage.py check would have failed on a missing dependency.
+    The ER diagram types the attribute as "file", so FileField is both the
+    faithful and the working choice.
+
+(b) Missing MEDIA_ROOT / MEDIA_URL. The LLM wrote upload_to='qr_uploads/...'
+    without adding the settings that upload_to resolves against. Uploads would
+    have been written relative to the process working directory. Two lines were
+    added to settings.py.
+
+(c) Duplicated User fields. The diagram draws "name" and "email" on both
+    profile entities. A literal transcription would have created columns that
+    duplicate auth_user.first_name / last_name / email and then drift out of
+    sync with them. Both files instead attach the profile to User with
+    OneToOneField(primary_key=True) and expose name/email as read-only
+    properties, so profile.id is the user's id — matching the diagram's "id PK"
+    — with one row per user and a single source of truth for the name.
+
+(d) Unprompted constraint. Both files add unique_together on
+    Enrollment(student, course). This is not in the second ER diagram, though
+    the first version of the diagram marked it UK*. It is kept because
+    duplicate enrollments would double-count a roster, but it is an addition to
+    the diagram, not a transcription of it.
+
+(e) Course.meeting_time is nullable in both files; the diagram does not mark it
+    optional. This is the one place the code is looser than the diagram.
+
+
+4. Assessment
+-------------
+The LLM was reliable at the mechanical part — reading cardinality notation off
+the diagram and turning it into ForeignKey declarations with correct null and
+on_delete behavior. The nullable lecture FK paired with on_delete=SET_NULL is
+the one genuinely non-obvious choice it got right: an upload whose QR code
+could not be decoded still needs to be stored, so the match has to happen after
+the insert, and that is only possible if the column is nullable.
+
+It was unreliable at two things. First, environment facts it could not see —
+whether Pillow was installed, whether MEDIA_ROOT existed. Second, volume: left
+alone it generated a method for every query it could imagine rather than the
+ones the application calls, which is why the file shrank by 46% without losing
+a single column. Reviewing the output against the diagram and the actual
+environment caught both.
